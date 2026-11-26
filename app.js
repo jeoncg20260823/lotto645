@@ -477,12 +477,15 @@ async function renderStats() {
   const stats = computeStats(draws);
   const latest = draws.find((d) => d.round === stats.latest);
   const missing = stats.latest < nextRound() - 1;
+  const minRound = Math.min(...draws.map((d) => d.round));
+  const holes = stats.latest - minRound + 1 - stats.total;
   const idx = Array.from({ length: 45 }, (_, i) => i + 1);
   const topFreq = [...idx].sort((a, b) => stats.count[b] - stats.count[a] || a - b).slice(0, 10);
   const topGap = [...idx].sort((a, b) => stats.gap[b] - stats.gap[a] || a - b).slice(0, 10);
   const rowsFreq = topFreq.map((n) => `<tr><td><span class="ball small-ball ${ballClass(n)}">${n}</span></td><td>${stats.count[n]}회</td></tr>`).join('');
   const rowsGap = topGap.map((n) => `<tr><td><span class="ball small-ball ${ballClass(n)}">${n}</span></td><td>${stats.gap[n]}회차째 안 나옴</td></tr>`).join('');
   body.innerHTML = `
+    ${holes > 0 ? `<p class="banner">저장된 회차 중간에 빠진 회차가 ${holes}개 있어요. 통계가 정확하지 않을 수 있으니 설정에서 자동 가져오기를 다시 눌러 주세요.</p>` : ''}
     ${missing ? `<p class="banner">제 ${nextRound() - 1}회 당첨번호가 아직 없어요. 설정 화면에서 가져와 주세요.</p>` : ''}
     <div class="card">
       <h2>최신 저장 회차: 제 ${stats.latest}회</h2>
@@ -578,42 +581,71 @@ async function fetchOne(round) {
   return { status: res.status, type, text, json };
 }
 
-// 자동 가져오기(시험): 최근 회차 주변을 20회차씩 건너뛰며 최대 5번 조회해 저장. 진단 정보를 함께 표시.
+// 자동 가져오기(시험): 한 번에 10회차 안팎만 오므로, 최근 100회차 중 빠진 곳을 찾아 이어서 요청한다.
+// 빈 회차가 남으면 "오래 안 나온 번호" 통계가 틀어지기 때문에 빈 곳이 없을 때까지 반복한다.
 async function autoFetch() {
   const out = $('#auto-out');
   const latest = nextRound() - 1;
-  const centers = [0, 1, 2, 3, 4].map((i) => latest - 20 * i).filter((r) => r >= 1);
-  const lines = [`제 ${latest}회 주변 조회 시작 (최대 ${centers.length}번 요청)`];
+  const TARGET = 100;
+  const BUDGET = 24;
+  const lo = Math.max(1, latest - TARGET + 1);
+  const have = new Set();
+  const lines = [`제 ${lo}~${latest}회를 가져옵니다. (최대 ${BUDGET}번 요청)`];
   out.textContent = lines.join('\n');
-  let saved = 0;
-  let newest = 0;
-  for (const c of centers) {
+  const topRound = () => (have.size ? Math.max(...have) : latest);
+  const firstMissing = () => {
+    for (let r = topRound(); r >= lo; r--) if (!have.has(r)) return r;
+    return 0;
+  };
+  let center = latest;
+  let requests = 0;
+  let failed = false;
+  while (center && requests < BUDGET) {
+    requests++;
     try {
-      const r = await fetchOne(c);
+      const r = await fetchOne(center);
       if (!r.json) {
         const title = (/<title[^>]*>([^<]*)/i.exec(r.text) || [])[1];
-        lines.push(`[실패] 중심 ${c}회: 응답 코드 ${r.status}, 형식 ${r.type || '알 수 없음'}, JSON이 아님${title ? ', 페이지 제목: ' + title.trim().slice(0, 60) : ''}\n앞부분: ${r.text.slice(0, 160).replace(/\s+/g, ' ')}`);
+        lines.push(`[실패] 중심 ${center}회: 응답 코드 ${r.status}, 형식 ${r.type || '알 수 없음'}, JSON이 아님${title ? ', 페이지 제목: ' + title.trim().slice(0, 60) : ''}\n앞부분: ${r.text.slice(0, 160).replace(/\s+/g, ' ')}`);
+        failed = true;
         break;
       }
       const draws = extractDraws(r.json);
       if (!draws.length) {
         const k = sampleKeys(r.json);
-        lines.push(`[실패] 중심 ${c}회: JSON은 왔지만 회차 번호를 찾지 못했어요.\n최상위 키: ${k.top.join(', ') || '(없음)'}\n목록 항목 키: ${k.inner.join(', ') || '(없음)'}`);
+        lines.push(`[실패] 중심 ${center}회: JSON은 왔지만 회차 번호를 찾지 못했어요.\n최상위 키: ${k.top.join(', ') || '(없음)'}\n목록 항목 키: ${k.inner.join(', ') || '(없음)'}`);
+        failed = true;
         break;
       }
-      for (const d of draws) await putDraw(d);
-      saved += draws.length;
-      newest = Math.max(newest, draws[draws.length - 1].round);
-      lines.push(`[성공] 중심 ${c}회: ${draws.length}개 회차 (${draws[0].round}~${draws[draws.length - 1].round}회)`);
+      const before = have.size;
+      for (const d of draws) {
+        await putDraw(d);
+        if (d.round >= lo && d.round <= latest) have.add(d.round);
+      }
+      lines.push(`[성공] 중심 ${center}회: ${draws.length}개 (${draws[0].round}~${draws[draws.length - 1].round}회)`);
+      if (have.size === before) {
+        lines.push('새로 받은 회차가 없어 여기서 멈춥니다.');
+        break;
+      }
     } catch (err) {
-      lines.push(`[실패] 중심 ${c}회: ${String(err)}\n브라우저 보안 정책(CORS)이나 네트워크 문제로 막혔을 수 있어요.`);
+      lines.push(`[실패] 중심 ${center}회: ${String(err)}\n브라우저 보안 정책(CORS)이나 네트워크 문제로 막혔을 수 있어요.`);
+      failed = true;
       break;
     }
+    center = firstMissing();
     out.textContent = lines.join('\n');
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((res) => setTimeout(res, 300));
   }
-  if (saved) lines.push(`\n저장 요청 ${saved}개 회차 (최신 ${newest}회). 겹치는 회차는 덮어써서 중복되지 않아요.`);
-  else lines.push('\n자동 가져오기에 실패했어요. 위의 붙여넣기 방식을 쓰고, 이 화면을 캡처해 알려 주세요.');
+  const missing = [];
+  for (let r = topRound(); r >= lo; r--) if (!have.has(r)) missing.push(r);
+  lines.push('');
+  if (have.size === 0) lines.push('자동 가져오기에 실패했어요. 위의 붙여넣기 방식을 쓰고, 이 화면을 캡처해 알려 주세요.');
+  else {
+    lines.push(`${have.size}개 회차를 저장했어요 (최신 ${topRound()}회, 요청 ${requests}번). 겹치는 회차는 덮어써서 중복되지 않아요.`);
+    if (topRound() < latest) lines.push(`제 ${latest}회 결과는 아직 올라오지 않았을 수 있어요.`);
+    if (missing.length) lines.push(`빠진 회차 ${missing.length}개가 남았어요 (예: ${missing.slice(0, 5).join(', ')}회). 다시 눌러 보세요.`);
+    if (failed) lines.push('중간에 실패해 일부만 저장됐어요. 다시 눌러 보세요.');
+  }
   out.textContent = lines.join('\n');
   refreshDrawStatus();
 }
