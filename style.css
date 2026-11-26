@@ -203,3 +203,6 @@ table.stat td:last-child { text-align: right; color: var(--quiet); }
   .balls { gap: 4px; }
   .game { padding: 10px 8px; }
 }
+
+.top { display: flex; align-items: baseline; justify-content: space-between; }
+.ver { color: var(--quiet); font-size: 12px; }

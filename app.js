@@ -1,5 +1,9 @@
 /* 로또 번호 추천 — 랜덤·통계·취향·재미 추천, 번호 보관함, 당첨 자동 비교, 통계 */
 
+// 화면에 표시되는 버전. 파일을 고칠 때 sw.js의 CACHE 이름 번호와 같이 올린다.
+const APP_VERSION = 'v5';
+const APP_DATE = '2026-11-26';
+
 // ===== LOGIC START (화면과 무관한 순수 로직: 시험 대상) =====
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 const ROUND1_MS = Date.UTC(2002, 11, 7, 20, 45); // 1회 추첨(한국 시간)을 UTC 필드로 표현
@@ -659,7 +663,23 @@ function showTab(id) {
   if (id === 'tab-settings') refreshDrawStatus();
 }
 
+async function showVersion() {
+  $('#ver').textContent = APP_VERSION;
+  let cache = '확인 불가';
+  try {
+    if (typeof caches !== 'undefined') {
+      const keys = (await caches.keys()).filter((k) => k.startsWith('lotto-app-'));
+      cache = keys.length ? keys.map((k) => k.replace('lotto-app-', '')).join(', ') : '없음';
+    }
+  } catch (e) {
+    cache = '확인 불가';
+  }
+  const note = cache === APP_VERSION || cache === '확인 불가' || cache === '없음' ? '' : '\n저장된 앱 파일이 옛 버전일 수 있어요. 앱을 완전히 닫았다가 다시 열어 보세요.';
+  $('#about').textContent = `앱 버전: ${APP_VERSION} (${APP_DATE})\n저장된 앱 파일 버전: ${cache}${note}`;
+}
+
 function init() {
+  showVersion();
   $('#round-label').textContent = `다음 추첨: 제 ${nextRound()}회 (${roundDateLabel(nextRound())})`;
   renderMethodSelects();
 
