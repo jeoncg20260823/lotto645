@@ -239,6 +239,53 @@ function rankOf(numbers, draw) {
   else if (hits.length === 3) rank = 5;
   return { rank, hits, bonus };
 }
+// 동행복권 JSON 응답에서 회차 정보를 찾아냄. 필드 이름이 바뀌어도 견디도록
+// (ltEpsd/tm1WnNo~tm6WnNo/bnsWnNo, drwNo/drwtNo1~6/bnusNo) 중첩된 어디에 있든 찾는다.
+function pickField(o, names) {
+  for (const n of names) if (o[n] !== undefined && o[n] !== null && o[n] !== '') return o[n];
+  return undefined;
+}
+
+function extractDraws(json) {
+  const found = new Map();
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (node && typeof node === 'object') {
+      const round = Number(pickField(node, ['ltEpsd', 'drwNo', 'round']));
+      const nums = [1, 2, 3, 4, 5, 6].map((i) => Number(pickField(node, [`tm${i}WnNo`, `drwtNo${i}`])));
+      const bonus = Number(pickField(node, ['bnsWnNo', 'bnusNo', 'bonus']));
+      const all = [...nums, bonus];
+      if (Number.isInteger(round) && round >= 1 && all.every((n) => Number.isInteger(n) && n >= 1 && n <= 45) && new Set(all).size === 7) {
+        found.set(round, { round, numbers: sortNums(nums), bonus });
+      }
+      Object.values(node).forEach(visit);
+    }
+  };
+  visit(json);
+  return [...found.values()].sort((a, b) => a.round - b.round);
+}
+
+// 진단용: 응답 JSON의 최상위 키와 첫 배열 원소의 키
+function sampleKeys(json) {
+  const top = json && typeof json === 'object' && !Array.isArray(json) ? Object.keys(json).slice(0, 12) : [];
+  let inner = [];
+  const find = (node, depth) => {
+    if (inner.length || depth > 4 || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      const first = node.find((x) => x && typeof x === 'object' && !Array.isArray(x));
+      if (first) {
+        inner = Object.keys(first).slice(0, 16);
+        return;
+      }
+    }
+    Object.values(node).forEach((v) => find(v, depth + 1));
+  };
+  find(json, 0);
+  return { top, inner };
+}
 // ===== LOGIC END =====
 
 // ---------- 저장소 (IndexedDB) ----------
@@ -515,26 +562,60 @@ async function restoreBackup(file) {
   }
 }
 
-async function probeLatest() {
-  const out = $('#probe-out');
-  const target = nextRound() - 1;
-  const urls = [
-    `https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=${target}`,
-    `https://www.dhlottery.co.kr/lt645/result?ltEpsd=${target}`,
-  ];
-  out.textContent = `제 ${target}회 조회 중...`;
-  const lines = [];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, { cache: 'no-store' });
-      const text = await res.text();
-      lines.push(`[성공] ${url}\n응답 코드 ${res.status}, 앞부분: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
-    } catch (err) {
-      lines.push(`[실패] ${url}\n${String(err)}`);
-    }
+// 동행복권 개편 후 결과 페이지가 쓰는 JSON 주소 (공식 공개 API가 아니라 바뀔 수 있음)
+const apiUrl = (round) => `https://www.dhlottery.co.kr/lt645/selectPstLt645InfoNew.do?srchDir=center&srchLtEpsd=${round}`;
+
+async function fetchOne(round) {
+  const res = await fetch(apiUrl(round), { cache: 'no-store' });
+  const type = res.headers.get('content-type') || '';
+  const text = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    json = null;
   }
-  lines.push('실패가 나오면 브라우저 보안 정책으로 막힌 것입니다. 위의 가져오기를 쓰세요.');
-  out.textContent = lines.join('\n\n');
+  return { status: res.status, type, text, json };
+}
+
+// 자동 가져오기(시험): 최근 회차 주변을 20회차씩 건너뛰며 최대 5번 조회해 저장. 진단 정보를 함께 표시.
+async function autoFetch() {
+  const out = $('#auto-out');
+  const latest = nextRound() - 1;
+  const centers = [0, 1, 2, 3, 4].map((i) => latest - 20 * i).filter((r) => r >= 1);
+  const lines = [`제 ${latest}회 주변 조회 시작 (최대 ${centers.length}번 요청)`];
+  out.textContent = lines.join('\n');
+  let saved = 0;
+  let newest = 0;
+  for (const c of centers) {
+    try {
+      const r = await fetchOne(c);
+      if (!r.json) {
+        const title = (/<title[^>]*>([^<]*)/i.exec(r.text) || [])[1];
+        lines.push(`[실패] 중심 ${c}회: 응답 코드 ${r.status}, 형식 ${r.type || '알 수 없음'}, JSON이 아님${title ? ', 페이지 제목: ' + title.trim().slice(0, 60) : ''}\n앞부분: ${r.text.slice(0, 160).replace(/\s+/g, ' ')}`);
+        break;
+      }
+      const draws = extractDraws(r.json);
+      if (!draws.length) {
+        const k = sampleKeys(r.json);
+        lines.push(`[실패] 중심 ${c}회: JSON은 왔지만 회차 번호를 찾지 못했어요.\n최상위 키: ${k.top.join(', ') || '(없음)'}\n목록 항목 키: ${k.inner.join(', ') || '(없음)'}`);
+        break;
+      }
+      for (const d of draws) await putDraw(d);
+      saved += draws.length;
+      newest = Math.max(newest, draws[draws.length - 1].round);
+      lines.push(`[성공] 중심 ${c}회: ${draws.length}개 회차 (${draws[0].round}~${draws[draws.length - 1].round}회)`);
+    } catch (err) {
+      lines.push(`[실패] 중심 ${c}회: ${String(err)}\n브라우저 보안 정책(CORS)이나 네트워크 문제로 막혔을 수 있어요.`);
+      break;
+    }
+    out.textContent = lines.join('\n');
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  if (saved) lines.push(`\n저장 요청 ${saved}개 회차 (최신 ${newest}회). 겹치는 회차는 덮어써서 중복되지 않아요.`);
+  else lines.push('\n자동 가져오기에 실패했어요. 위의 붙여넣기 방식을 쓰고, 이 화면을 캡처해 알려 주세요.');
+  out.textContent = lines.join('\n');
+  refreshDrawStatus();
 }
 
 // ---------- 탭 전환과 시작 ----------
@@ -578,7 +659,7 @@ function init() {
     if (f) restoreBackup(f);
     e.target.value = '';
   });
-  $('#probe-btn').addEventListener('click', probeLatest);
+  $('#auto-btn').addEventListener('click', autoFetch);
   $('#reset-btn').addEventListener('click', async () => {
     if (confirm('보관함의 저장된 번호를 모두 삭제할까요? 되돌릴 수 없습니다.')) {
       await clearTickets();
