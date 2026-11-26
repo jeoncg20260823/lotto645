@@ -1,7 +1,7 @@
 /* 로또 번호 추천 — 랜덤·통계·취향·재미 추천, 번호 보관함, 당첨 자동 비교, 통계 */
 
 // 화면에 표시되는 버전. 파일을 고칠 때 sw.js의 CACHE 이름 번호와 같이 올린다.
-const APP_VERSION = 'v5';
+const APP_VERSION = 'v7';
 const APP_DATE = '2026-11-26';
 
 // ===== LOGIC START (화면과 무관한 순수 로직: 시험 대상) =====
@@ -654,6 +654,72 @@ async function autoFetch() {
   refreshDrawStatus();
 }
 
+// 앱을 열 때 새 회차가 있는지 조용히 확인한다. (10분 안에는 다시 시도하지 않음, 실패해도 화면은 그대로)
+async function autoSync(force = false) {
+  const el = $('#sync-status');
+  if (force) el.textContent = '새 회차를 확인하는 중…';
+  const say = async (msg) => {
+    el.textContent = msg;
+    try {
+      await setSetting('lastSyncMsg', msg);
+    } catch (e) {
+      /* 저장 실패는 무시 */
+    }
+  };
+  try {
+    const last = await getSetting('lastSyncAt');
+    if (!force && last && Date.now() - last < 10 * 60 * 1000) {
+      el.textContent = (await getSetting('lastSyncMsg')) || '';
+      return;
+    }
+    const latest = nextRound() - 1;
+    const have = new Set((await allDraws()).map((d) => d.round));
+    if (have.has(latest)) {
+      await say(`자동 확인: 최신 제 ${latest}회가 이미 저장되어 있어요.`);
+      return;
+    }
+    await setSetting('lastSyncAt', Date.now());
+    const lo = have.size ? Math.max(...have) : Math.max(1, latest - 9);
+    let center = latest;
+    let requests = 0;
+    let added = 0;
+    while (center && requests < 8) {
+      requests++;
+      const r = await fetchOne(center);
+      const draws = r.json ? extractDraws(r.json) : [];
+      if (!draws.length) throw new Error(r.json ? '회차 정보를 찾지 못했어요' : `JSON이 아닌 응답(${r.status})`);
+      let now = 0;
+      for (const d of draws) {
+        if (!have.has(d.round)) {
+          now++;
+          have.add(d.round);
+        }
+        await putDraw(d);
+      }
+      added += now;
+      if (!now) break;
+      center = 0;
+      for (let x = Math.max(...have); x > lo; x--) {
+        if (!have.has(x)) {
+          center = x;
+          break;
+        }
+      }
+    }
+    const top = have.size ? Math.max(...have) : 0;
+    let msg = added ? `자동 확인: 새 회차 ${added}개를 저장했어요 (최신 제 ${top}회).` : `자동 확인: 새 회차가 없어요 (최신 제 ${top}회).`;
+    if (top < latest) msg += ` 제 ${latest}회 결과는 아직 올라오지 않았을 수 있어요. 나중에 다시 열어 보세요.`;
+    await say(msg);
+    if (added) {
+      const active = document.querySelector('.tab.active');
+      if (active && (active.id === 'tab-vault' || active.id === 'tab-stats')) showTab(active.id);
+      refreshDrawStatus();
+    }
+  } catch (err) {
+    await say(`자동 확인 실패: ${err && err.message ? err.message : err}. 설정의 자동 가져오기 버튼을 눌러 보세요.`);
+  }
+}
+
 // ---------- 탭 전환과 시작 ----------
 function showTab(id) {
   document.querySelectorAll('.tab').forEach((el) => el.classList.toggle('active', el.id === id));
@@ -680,6 +746,7 @@ async function showVersion() {
 
 function init() {
   showVersion();
+  autoSync();
   $('#round-label').textContent = `다음 추첨: 제 ${nextRound()}회 (${roundDateLabel(nextRound())})`;
   renderMethodSelects();
 
@@ -712,6 +779,7 @@ function init() {
     e.target.value = '';
   });
   $('#auto-btn').addEventListener('click', autoFetch);
+  $('#sync-btn').addEventListener('click', () => autoSync(true));
   $('#reset-btn').addEventListener('click', async () => {
     if (confirm('보관함의 저장된 번호를 모두 삭제할까요? 되돌릴 수 없습니다.')) {
       await clearTickets();
