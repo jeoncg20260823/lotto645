@@ -1,7 +1,7 @@
 /* 로또 번호 추천 — 랜덤·통계·취향·재미 추천, 번호 보관함, 당첨 자동 비교, 통계 */
 
 // 화면에 표시되는 버전. 파일을 고칠 때 sw.js의 CACHE 이름 번호와 같이 올린다.
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v12';
 const APP_DATE = '2026-11-26';
 
 // ===== LOGIC START (화면과 무관한 순수 로직: 시험 대상) =====
@@ -889,13 +889,64 @@ async function showVersion() {
   $('#about').textContent = `앱 버전: ${APP_VERSION} (${APP_DATE})\n저장된 앱 파일 버전: ${cache}${note}`;
 }
 
+// 취향·재미 입력칸은 앱을 닫아도 남기고, 언제든 고칠 수 있게 한다.
+const OPT_IDS = { fixed: '#fixed-input', date: '#date-input', fun: '#fun-input' };
+
+async function restoreOptions() {
+  try {
+    const saved = (await getSetting('opts')) || {};
+    let any = false;
+    for (const [k, sel] of Object.entries(OPT_IDS)) {
+      if (typeof saved[k] === 'string' && saved[k]) {
+        $(sel).value = saved[k];
+        any = true;
+      }
+    }
+    const cnt = Number(saved.count);
+    if (cnt >= 1 && cnt <= 5) $('#game-count').value = String(cnt);
+    renderMethodSelects();
+    if (Array.isArray(saved.methods)) {
+      saved.methods.forEach((m, i) => {
+        const sel = $(`#method-${i}`);
+        if (sel && METHODS[m]) sel.value = m;
+      });
+    }
+    if (typeof saved.balance === 'boolean') $('#balance').checked = saved.balance;
+    if (any) {
+      const det = document.querySelector('#tab-recommend details');
+      if (det) det.open = true;
+    }
+  } catch (e) {
+    /* 읽기 실패는 무시: 빈 칸으로 시작 */
+  }
+}
+
+function saveOptions() {
+  const value = {};
+  for (const [k, sel] of Object.entries(OPT_IDS)) value[k] = $(sel).value;
+  value.count = Number($('#game-count').value);
+  value.methods = [...document.querySelectorAll('#game-methods select')].map((x) => x.value);
+  value.balance = $('#balance').checked;
+  return setSetting('opts', value).catch(() => {});
+}
+
 function init() {
   showVersion();
+  restoreOptions();
+  for (const sel of Object.values(OPT_IDS)) {
+    $(sel).addEventListener('input', saveOptions);
+    $(sel).addEventListener('change', saveOptions);
+  }
+  $('#game-methods').addEventListener('change', saveOptions);
+  $('#balance').addEventListener('change', saveOptions);
   autoSync();
   $('#round-label').textContent = `다음 추첨: 제 ${nextRound()}회 (${roundDateLabel(nextRound())})`;
   renderMethodSelects();
 
-  $('#game-count').addEventListener('change', renderMethodSelects);
+  $('#game-count').addEventListener('change', () => {
+    renderMethodSelects();
+    saveOptions();
+  });
   $('#draw-btn').addEventListener('click', draw);
   $('#save-all-btn').addEventListener('click', async () => {
     for (let i = 0; i < current.length; i++) await saveGame(i);
