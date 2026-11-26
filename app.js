@@ -1,7 +1,7 @@
 /* 로또 번호 추천 — 랜덤·통계·취향·재미 추천, 번호 보관함, 당첨 자동 비교, 통계 */
 
 // 화면에 표시되는 버전. 파일을 고칠 때 sw.js의 CACHE 이름 번호와 같이 올린다.
-const APP_VERSION = 'v7';
+const APP_VERSION = 'v9';
 const APP_DATE = '2026-11-26';
 
 // ===== LOGIC START (화면과 무관한 순수 로직: 시험 대상) =====
@@ -290,6 +290,55 @@ function sampleKeys(json) {
   find(json, 0);
   return { top, inner };
 }
+// 회차별 요약: 게임마다 맞은 번호·틀린 번호·등수
+function summarizeRound(tickets, draw) {
+  const games = tickets.map((t) => {
+    const res = rankOf(t.numbers, draw);
+    const miss = t.numbers.filter((n) => !res.hits.includes(n));
+    return { ticket: t, rank: res.rank, hits: res.hits, miss, bonusHit: res.bonus && !res.hits.includes(draw.bonus) && t.numbers.includes(draw.bonus) };
+  });
+  const ranks = games.map((g) => g.rank).filter((x) => x > 0);
+  return { games, wins: ranks.length, best: ranks.length ? Math.min(...ranks) : 0 };
+}
+
+// 다양한 통계: 홀짝·합계·구간·연속·직전 회차 겹침·보너스·최근 N회
+function extraStats(draws) {
+  const sorted = [...draws].sort((a, b) => a.round - b.round);
+  const total = sorted.length;
+  const odd = new Array(7).fill(0);
+  const sumLabels = ['99 이하', '100~119', '120~139', '140~159', '160~179', '180 이상'];
+  const sumBins = new Array(6).fill(0);
+  const decLabels = ['1~10', '11~20', '21~30', '31~40', '41~45'];
+  const dec = new Array(5).fill(0);
+  const bonus = new Array(46).fill(0);
+  let consec = 0;
+  let overlapSum = 0;
+  let overlapN = 0;
+  const byRound = new Map(sorted.map((d) => [d.round, d]));
+  for (const d of sorted) {
+    odd[d.numbers.filter((n) => n % 2 === 1).length]++;
+    const sum = d.numbers.reduce((a, b) => a + b, 0);
+    sumBins[sum < 100 ? 0 : Math.min(5, Math.floor((sum - 100) / 20) + 1)]++;
+    for (const n of d.numbers) dec[Math.min(4, Math.floor((n - 1) / 10))]++;
+    bonus[d.bonus]++;
+    const ns = d.numbers;
+    if (ns.some((n, i) => i > 0 && n - ns[i - 1] === 1)) consec++;
+    const prev = byRound.get(d.round - 1);
+    if (prev) {
+      overlapSum += d.numbers.filter((n) => prev.numbers.includes(n)).length;
+      overlapN++;
+    }
+  }
+  return { total, odd, sumLabels, sumBins, decLabels, dec, bonus, consec, overlapAvg: overlapN ? overlapSum / overlapN : 0, overlapN };
+}
+
+// 최근 n회차의 번호별 출현 횟수
+function recentCounts(draws, n) {
+  const top = [...draws].sort((a, b) => b.round - a.round).slice(0, n);
+  const count = new Array(46).fill(0);
+  for (const d of top) for (const x of d.numbers) count[x]++;
+  return { count, used: top.length };
+}
 // ===== LOGIC END =====
 
 // ---------- 저장소 (IndexedDB) ----------
@@ -414,62 +463,110 @@ async function saveGame(i) {
 }
 
 // ---------- 보관함 탭 ----------
+let vaultRound = null; // null이면 회차 목록, 숫자면 그 회차의 상세 화면
+
+const nlist = (a) => (a.length ? a.join(', ') : '없음');
+
 async function renderVault() {
   const list = $('#vault-list');
   const banner = $('#vault-banner');
   const [tickets, draws] = await Promise.all([allTickets(), allDraws()]);
   const drawMap = new Map(draws.map((d) => [d.round, d]));
   if (tickets.length === 0) {
+    vaultRound = null;
     banner.innerHTML = '';
     list.innerHTML = '<p class="empty">저장한 번호가 없습니다.<br>추천 탭에서 번호를 뽑아 저장해 보세요.</p>';
     return;
   }
   const expectedLatest = nextRound() - 1;
-  const waiting = tickets.some((t) => t.round <= expectedLatest && !drawMap.has(t.round));
-  banner.innerHTML = waiting
-    ? '<p class="banner">당첨번호가 없는 회차가 있어요. 설정 화면에서 당첨번호를 가져오면 자동으로 비교합니다.</p>'
-    : '';
-
   const byRound = new Map();
   for (const t of tickets) {
     if (!byRound.has(t.round)) byRound.set(t.round, []);
     byRound.get(t.round).push(t);
   }
-  const rounds = [...byRound.keys()].sort((a, b) => b - a);
-  list.innerHTML = rounds
-    .map((r) => {
-      const d = drawMap.get(r);
-      const head = d
-        ? `<div class="win-line">당첨번호 ${ballsHtml(d.numbers, [], d.bonus)}</div>`
-        : r > expectedLatest
-          ? '<p class="hint">아직 추첨 전입니다.</p>'
-          : '<p class="hint">이 회차 당첨번호가 아직 없어요.</p>';
-      const rows = byRound
-        .get(r)
-        .sort((a, b) => a.savedAt - b.savedAt)
-        .map((t) => {
-          let result = '';
-          let hits = [];
-          if (d) {
-            const res = rankOf(t.numbers, d);
-            hits = res.hits;
-            result = res.rank ? `<span class="rank r${res.rank}">${res.rank}등</span>` : '<span class="rank r0">낙첨</span>';
-          }
-          return `
-          <div class="game">
-            <div class="balls">${ballsHtml(t.numbers, hits)}</div>
-            ${result}
-            <button class="small" data-del="${t.id}">삭제</button>
-          </div>
-          <p class="method-tag">${esc(t.method || '')}</p>`;
-        })
-        .join('');
-      return `<div class="group"><h3>제 ${r}회 (${roundDateLabel(r)} 추첨)</h3>${head}${rows}</div>`;
-    })
-    .join('');
+  for (const arr of byRound.values()) arr.sort((a, b) => a.savedAt - b.savedAt);
+  if (vaultRound !== null && !byRound.has(vaultRound)) vaultRound = null;
+
+  if (vaultRound === null) {
+    const waiting = tickets.some((t) => t.round <= expectedLatest && !drawMap.has(t.round));
+    banner.innerHTML = waiting
+      ? '<p class="banner">당첨번호가 없는 회차가 있어요. 설정 화면에서 "지금 새 회차 확인"을 누르면 자동으로 비교합니다.</p>'
+      : '';
+    const rounds = [...byRound.keys()].sort((a, b) => b - a);
+    list.innerHTML = rounds
+      .map((r) => {
+        const ts = byRound.get(r);
+        const d = drawMap.get(r);
+        let balls = '';
+        let badge;
+        if (d) {
+          const sum = summarizeRound(ts, d);
+          balls = `<div class="win-line">당첨번호 ${ballsHtml(d.numbers, [], d.bonus)}</div>`;
+          badge = sum.wins ? `<span class="rank r${sum.best}">${sum.best}등 (${sum.wins}게임 당첨)</span>` : '<span class="rank r0">낙첨</span>';
+        } else if (r > expectedLatest) {
+          badge = '<span class="rank r0">추첨 전</span>';
+        } else {
+          badge = '<span class="rank r0">당첨번호 없음</span>';
+        }
+        return `<button class="round-item" data-round="${r}">
+          <span class="ri-head"><b>제 ${r}회</b> <span class="ri-date">${roundDateLabel(r)} 추첨</span><span class="ri-go">›</span></span>
+          ${balls}
+          <span class="ri-foot">저장 ${ts.length}게임 ${badge}</span>
+        </button>`;
+      })
+      .join('');
+    return;
+  }
+
+  // 상세 화면
+  banner.innerHTML = '';
+  const r = vaultRound;
+  const ts = byRound.get(r);
+  const d = drawMap.get(r);
+  let head;
+  let sumLine = '';
+  let games;
+  if (d) {
+    const sum = summarizeRound(ts, d);
+    head = `<div class="win-line">당첨번호 ${ballsHtml(d.numbers, [], d.bonus)}</div>`;
+    sumLine = `<p class="hint">${ts.length}게임 중 ${sum.wins ? `${sum.wins}게임 당첨 (최고 ${sum.best}등)` : '당첨 없음'}</p>`;
+    games = sum.games
+      .map((g, i) => {
+        const balls = g.ticket.numbers
+          .map((n) => {
+            const cls = g.hits.includes(n) ? ' hit' : n === d.bonus ? ' bhit' : ' miss';
+            return `<span class="ball ${ballClass(n)}${cls}">${n}</span>`;
+          })
+          .join('');
+        const badge = g.rank ? `<span class="rank r${g.rank}">${g.rank}등</span>` : '<span class="rank r0">낙첨</span>';
+        return `
+        <div class="game-block">
+          <div class="game"><span class="label">${MARK[i] || i + 1}</span><div class="balls">${balls}</div>${badge}</div>
+          <p class="match-line"><b>맞은 번호 ${g.hits.length}개</b>: ${nlist(g.hits)}<br><b>틀린 번호 ${g.miss.length}개</b>: ${nlist(g.miss)}${g.bonusHit ? `<br>보너스 번호 ${d.bonus} 일치` : ''}</p>
+          <p class="method-tag">${esc(g.ticket.method || '')} <button class="small" data-del="${g.ticket.id}">삭제</button></p>
+        </div>`;
+      })
+      .join('');
+  } else {
+    head = r > expectedLatest ? '<p class="hint">아직 추첨 전입니다. 추첨 뒤 설정에서 "지금 새 회차 확인"을 누르면 결과가 표시돼요.</p>' : '<p class="hint">이 회차 당첨번호가 아직 없어요. 설정에서 "지금 새 회차 확인"을 눌러 보세요.</p>';
+    games = ts
+      .map(
+        (t, i) => `
+        <div class="game-block">
+          <div class="game"><span class="label">${MARK[i] || i + 1}</span><div class="balls">${ballsHtml(t.numbers)}</div></div>
+          <p class="method-tag">${esc(t.method || '')} <button class="small" data-del="${t.id}">삭제</button></p>
+        </div>`
+      )
+      .join('');
+  }
+  list.innerHTML = `<button class="small" data-back="1">← 회차 목록</button>
+    <h3 class="detail-h">제 ${r}회 (${roundDateLabel(r)} 추첨)</h3>${head}${sumLine}${games}`;
 }
 
 // ---------- 당첨 통계 탭 ----------
+const barRow = (label, value, max, text) =>
+  `<tr><td class="bl">${label}</td><td class="bb"><span class="bar" style="width:${max ? Math.round((value / max) * 100) : 0}%"></span></td><td class="bv">${text}</td></tr>`;
+
 async function renderStats() {
   const body = $('#stats-body');
   const draws = await allDraws();
@@ -479,6 +576,7 @@ async function renderStats() {
     return;
   }
   const stats = computeStats(draws);
+  const ex = extraStats(draws);
   const latest = draws.find((d) => d.round === stats.latest);
   const missing = stats.latest < nextRound() - 1;
   const minRound = Math.min(...draws.map((d) => d.round));
@@ -486,18 +584,50 @@ async function renderStats() {
   const idx = Array.from({ length: 45 }, (_, i) => i + 1);
   const topFreq = [...idx].sort((a, b) => stats.count[b] - stats.count[a] || a - b).slice(0, 10);
   const topGap = [...idx].sort((a, b) => stats.gap[b] - stats.gap[a] || a - b).slice(0, 10);
-  const rowsFreq = topFreq.map((n) => `<tr><td><span class="ball small-ball ${ballClass(n)}">${n}</span></td><td>${stats.count[n]}회</td></tr>`).join('');
-  const rowsGap = topGap.map((n) => `<tr><td><span class="ball small-ball ${ballClass(n)}">${n}</span></td><td>${stats.gap[n]}회차째 안 나옴</td></tr>`).join('');
+  const small = (n) => `<span class="ball small-ball ${ballClass(n)}">${n}</span>`;
+  const rowsFreq = topFreq.map((n) => `<tr><td>${small(n)}</td><td>${stats.count[n]}회</td></tr>`).join('');
+  const rowsGap = topGap.map((n) => `<tr><td>${small(n)}</td><td>${stats.gap[n]}회차째 안 나옴</td></tr>`).join('');
+
+  const maxC = Math.max(...stats.count.slice(1));
+  const grid = idx.map((n) => `<div class="cell" style="--h:${maxC ? stats.count[n] / maxC : 0}">${small(n)}<span>${stats.count[n]}</span></div>`).join('');
+
+  const rec = recentCounts(draws, 10);
+  const recTop = [...idx].sort((a, b) => rec.count[b] - rec.count[a] || a - b).filter((n) => rec.count[n] > 0).slice(0, 8);
+  const recHtml = recTop.map((n) => `<tr><td>${small(n)}</td><td>${rec.count[n]}회</td></tr>`).join('');
+
+  const t = ex.total;
+  const pct = (v) => `${v}회 (${Math.round((v / t) * 100)}%)`;
+  const maxOdd = Math.max(...ex.odd);
+  const oddRows = ex.odd.map((v, k) => barRow(`홀${k}:짝${6 - k}`, v, maxOdd, pct(v))).reverse().join('');
+  const maxSum = Math.max(...ex.sumBins);
+  const sumRows = ex.sumBins.map((v, k) => barRow(ex.sumLabels[k], v, maxSum, pct(v))).join('');
+  const maxDec = Math.max(...ex.dec);
+  const decRows = ex.dec.map((v, k) => barRow(ex.decLabels[k], v, maxDec, `${Math.round((v / (t * 6)) * 100)}%`)).join('');
+  const topBonus = [...idx].sort((a, b) => ex.bonus[b] - ex.bonus[a] || a - b).filter((n) => ex.bonus[n] > 0).slice(0, 5);
+  const bonusHtml = topBonus.map((n) => `<tr><td>${small(n)}</td><td>${ex.bonus[n]}회</td></tr>`).join('');
+
   body.innerHTML = `
     ${holes > 0 ? `<p class="banner">저장된 회차 중간에 빠진 회차가 ${holes}개 있어요. 통계가 정확하지 않을 수 있으니 설정에서 자동 가져오기를 다시 눌러 주세요.</p>` : ''}
-    ${missing ? `<p class="banner">제 ${nextRound() - 1}회 당첨번호가 아직 없어요. 설정 화면에서 가져와 주세요.</p>` : ''}
+    ${missing ? `<p class="banner">제 ${nextRound() - 1}회 당첨번호가 아직 없어요. 설정 화면에서 "지금 새 회차 확인"을 눌러 주세요.</p>` : ''}
     <div class="card">
       <h2>최신 저장 회차: 제 ${stats.latest}회</h2>
       <div class="win-line">${ballsHtml(latest.numbers, [], latest.bonus)}</div>
-      <p class="hint">저장된 ${stats.total}개 회차 기준 통계입니다. 보너스 번호는 제외하고 집계해요.</p>
+      <p class="hint">저장된 ${stats.total}개 회차(제 ${minRound}~${stats.latest}회) 기준 통계입니다. 보너스 번호는 제외하고 집계하며, 별도 표시한 항목만 예외예요.</p>
     </div>
+    <div class="card"><h2>번호별 출현 횟수 (1~45)</h2><div class="grid45">${grid}</div></div>
     <div class="card"><h2>많이 나온 번호 TOP 10</h2><table class="stat">${rowsFreq}</table></div>
     <div class="card"><h2>오래 안 나온 번호 TOP 10</h2><table class="stat">${rowsGap}</table></div>
+    <div class="card"><h2>최근 ${rec.used}회 자주 나온 번호</h2><table class="stat">${recHtml}</table></div>
+    <div class="card"><h2>홀짝 비율</h2><table class="bars">${oddRows}</table></div>
+    <div class="card"><h2>번호 합계 구간</h2><table class="bars">${sumRows}</table></div>
+    <div class="card"><h2>번호 구간별 비율</h2><table class="bars">${decRows}</table></div>
+    <div class="card"><h2>이어진 번호와 직전 회차 겹침</h2>
+      <table class="stat">
+        <tr><td>연속 번호(예: 14, 15)가 있던 회차</td><td>${pct(ex.consec)}</td></tr>
+        <tr><td>직전 회차와 겹친 번호 평균</td><td>${ex.overlapN ? ex.overlapAvg.toFixed(2) + '개' : '계산 불가'}</td></tr>
+      </table>
+    </div>
+    <div class="card"><h2>보너스 번호 많이 나온 번호 TOP 5</h2><table class="stat">${bonusHtml}</table></div>
     <p class="notice">과거 통계는 다음 추첨 결과와 무관합니다. 참고용으로만 보세요.</p>`;
 }
 
@@ -657,8 +787,10 @@ async function autoFetch() {
 // 앱을 열 때 새 회차가 있는지 조용히 확인한다. (10분 안에는 다시 시도하지 않음, 실패해도 화면은 그대로)
 async function autoSync(force = false) {
   const el = $('#sync-status');
-  if (force) el.textContent = '새 회차를 확인하는 중…';
-  const say = async (msg) => {
+  if (force) el.textContent = '동행복권에서 새 당첨번호를 확인하는 중…';
+  const say = async (body) => {
+    const t = new Date();
+    const msg = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')} 확인 · ${body}`;
     el.textContent = msg;
     try {
       await setSetting('lastSyncMsg', msg);
@@ -675,7 +807,7 @@ async function autoSync(force = false) {
     const latest = nextRound() - 1;
     const have = new Set((await allDraws()).map((d) => d.round));
     if (have.has(latest)) {
-      await say(`자동 확인: 최신 제 ${latest}회가 이미 저장되어 있어요.`);
+      await say(`최신 제 ${latest}회 당첨번호가 이미 저장되어 있어요. 새로 가져올 회차가 없습니다. (다음 추첨: 제 ${nextRound()}회, ${roundDateLabel(nextRound())})`);
       return;
     }
     await setSetting('lastSyncAt', Date.now());
@@ -707,8 +839,8 @@ async function autoSync(force = false) {
       }
     }
     const top = have.size ? Math.max(...have) : 0;
-    let msg = added ? `자동 확인: 새 회차 ${added}개를 저장했어요 (최신 제 ${top}회).` : `자동 확인: 새 회차가 없어요 (최신 제 ${top}회).`;
-    if (top < latest) msg += ` 제 ${latest}회 결과는 아직 올라오지 않았을 수 있어요. 나중에 다시 열어 보세요.`;
+    let msg = added ? `새 당첨번호 ${added}개 회차를 가져왔어요. 지금 최신은 제 ${top}회입니다.` : `새 당첨번호가 아직 없어요. 지금 최신은 제 ${top}회입니다.`;
+    if (top < latest) msg += ` 제 ${latest}회 결과는 동행복권에 아직 올라오지 않았을 수 있어요. 잠시 뒤 다시 눌러 보세요.`;
     await say(msg);
     if (added) {
       const active = document.querySelector('.tab.active');
@@ -716,7 +848,7 @@ async function autoSync(force = false) {
       refreshDrawStatus();
     }
   } catch (err) {
-    await say(`자동 확인 실패: ${err && err.message ? err.message : err}. 설정의 자동 가져오기 버튼을 눌러 보세요.`);
+    await say(`확인하지 못했어요 (${err && err.message ? err.message : err}). 인터넷 연결을 확인하고 다시 눌러 보세요. 계속 안 되면 아래 자동 가져오기나 붙여넣기를 쓰세요.`);
   }
 }
 
@@ -724,7 +856,10 @@ async function autoSync(force = false) {
 function showTab(id) {
   document.querySelectorAll('.tab').forEach((el) => el.classList.toggle('active', el.id === id));
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === id));
-  if (id === 'tab-vault') renderVault();
+  if (id === 'tab-vault') {
+    vaultRound = null;
+    renderVault();
+  }
   if (id === 'tab-stats') renderStats();
   if (id === 'tab-settings') refreshDrawStatus();
 }
@@ -760,11 +895,17 @@ function init() {
     if (i !== undefined) saveGame(Number(i));
   });
   $('#vault-list').addEventListener('click', async (e) => {
-    const id = e.target.dataset && e.target.dataset.del;
-    if (id !== undefined) {
-      await deleteTicket(Number(id));
-      renderVault();
+    const el = e.target.closest ? e.target.closest('[data-round],[data-back],[data-del]') : null;
+    if (!el) return;
+    if (el.dataset.del !== undefined) {
+      await deleteTicket(Number(el.dataset.del));
+    } else if (el.dataset.back !== undefined) {
+      vaultRound = null;
+    } else {
+      vaultRound = Number(el.dataset.round);
     }
+    await renderVault();
+    window.scrollTo && window.scrollTo(0, 0);
   });
   document.querySelector('.tabs').addEventListener('click', (e) => {
     const tab = e.target.dataset && e.target.dataset.tab;

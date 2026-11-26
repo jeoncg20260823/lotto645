@@ -206,3 +206,24 @@ table.stat td:last-child { text-align: right; color: var(--quiet); }
 
 .top { display: flex; align-items: baseline; justify-content: space-between; }
 .ver { color: var(--quiet); font-size: 12px; }
+
+/* ---- v9: 보관함 회차 목록·상세, 통계 ---- */
+.round-item { display: block; width: 100%; text-align: left; margin: 0 0 10px; padding: 12px; border-radius: 12px; background: #fff; }
+.ri-head { display: flex; align-items: baseline; gap: 8px; }
+.ri-date { color: var(--quiet); font-size: 12px; }
+.ri-go { margin-left: auto; color: var(--quiet); font-size: 20px; }
+.round-item .win-line { margin: 8px 0; }
+.ri-foot { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--quiet); margin-top: 4px; }
+.detail-h { margin: 12px 0 4px; font-size: 16px; color: var(--ink); }
+.match-line { margin: 4px 4px 0; font-size: 13px; line-height: 1.6; }
+.ball.miss { opacity: 0.3; }
+.ball.bhit { box-shadow: 0 0 0 3px var(--quiet); opacity: 0.8; }
+.method-tag .small { margin-left: 8px; padding: 2px 8px; }
+.grid45 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.grid45 .cell { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border-radius: 8px; background: rgba(47, 111, 237, calc(var(--h) * 0.25)); font-size: 12px; color: var(--quiet); }
+table.bars { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.bars td { padding: 4px 0; }
+table.bars .bl { width: 22%; white-space: nowrap; }
+table.bars .bb { padding: 4px 8px; }
+table.bars .bar { display: block; height: 10px; background: var(--accent); border-radius: 5px; min-width: 2px; }
+table.bars .bv { width: 28%; text-align: right; color: var(--quiet); white-space: nowrap; }
