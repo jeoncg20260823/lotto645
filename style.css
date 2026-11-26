@@ -227,3 +227,5 @@ table.bars .bl { width: 22%; white-space: nowrap; }
 table.bars .bb { padding: 4px 8px; }
 table.bars .bar { display: block; height: 10px; background: var(--accent); border-radius: 5px; min-width: 2px; }
 table.bars .bv { width: 28%; text-align: right; color: var(--quiet); white-space: nowrap; }
+
+.status-box { margin: 8px 0 12px; padding: 10px 12px; border-radius: 10px; background: #fff; border: 1px solid var(--line); font-size: 14px; line-height: 1.6; word-break: keep-all; }

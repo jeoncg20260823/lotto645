@@ -1,7 +1,7 @@
 /* 로또 번호 추천 — 랜덤·통계·취향·재미 추천, 번호 보관함, 당첨 자동 비교, 통계 */
 
 // 화면에 표시되는 버전. 파일을 고칠 때 sw.js의 CACHE 이름 번호와 같이 올린다.
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 const APP_DATE = '2026-11-26';
 
 // ===== LOGIC START (화면과 무관한 순수 로직: 시험 대상) =====
@@ -703,7 +703,17 @@ async function restoreBackup(file) {
 const apiUrl = (round) => `https://www.dhlottery.co.kr/lt645/selectPstLt645InfoNew.do?srchDir=center&srchLtEpsd=${round}`;
 
 async function fetchOne(round) {
-  const res = await fetch(apiUrl(round), { cache: 'no-store' });
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+  let res;
+  try {
+    res = await fetch(apiUrl(round), { cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error('15초 안에 응답이 없어요');
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const type = res.headers.get('content-type') || '';
   const text = await res.text();
   let json = null;
@@ -801,7 +811,7 @@ async function autoSync(force = false) {
   try {
     const last = await getSetting('lastSyncAt');
     if (!force && last && Date.now() - last < 10 * 60 * 1000) {
-      el.textContent = (await getSetting('lastSyncMsg')) || '';
+      el.textContent = (await getSetting('lastSyncMsg')) || el.textContent;
       return;
     }
     const latest = nextRound() - 1;
@@ -920,7 +930,19 @@ function init() {
     e.target.value = '';
   });
   $('#auto-btn').addEventListener('click', autoFetch);
-  $('#sync-btn').addEventListener('click', () => autoSync(true));
+  $('#sync-btn').addEventListener('click', async () => {
+    const btn = $('#sync-btn');
+    btn.disabled = true;
+    btn.textContent = '확인 중…';
+    try {
+      await autoSync(true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '지금 새 회차 확인';
+    }
+    const box = $('#sync-status');
+    if (box && box.scrollIntoView) box.scrollIntoView({ block: 'nearest' });
+  });
   $('#reset-btn').addEventListener('click', async () => {
     if (confirm('보관함의 저장된 번호를 모두 삭제할까요? 되돌릴 수 없습니다.')) {
       await clearTickets();
