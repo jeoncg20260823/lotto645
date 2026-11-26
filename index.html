@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>로또 번호 추천</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><h1>로또 번호 추천</h1></header>
+
+<main>
+  <section id="tab-recommend" class="tab active">
+    <p class="round" id="round-label"></p>
+
+    <div class="card">
+      <label for="game-count">게임 수</label>
+      <select id="game-count">
+        <option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option>
+      </select>
+
+      <label>게임별 추천 방식</label>
+      <div id="game-methods"></div>
+
+      <label class="check"><input type="checkbox" id="balance"> 균형 조건 적용 (홀짝 2:4~4:2, 번호 합 100~170, 3개 구간 이상)</label>
+
+      <details>
+        <summary>취향·재미 옵션 입력</summary>
+        <label for="fixed-input">고정 번호 (쉼표로 구분, 최대 5개)</label>
+        <input id="fixed-input" type="text" inputmode="numeric" placeholder="예: 7, 14, 23">
+        <label for="date-input">생일·기념일</label>
+        <input id="date-input" type="date">
+        <label for="fun-input">꿈·이름·띠 등 아무 말</label>
+        <input id="fun-input" type="text" placeholder="예: 용꿈, 홍길동, 원숭이띠">
+        <p class="hint">취향 방식은 고정 번호를 먼저 넣고, 날짜의 월·일·연도 끝 두 자리 중 일부와 무작위 번호로 채웁니다. 재미 방식은 입력한 말과 회차를 섞어 번호를 만들며, 같은 말·같은 회차면 같은 결과가 나옵니다.</p>
+      </details>
+
+      <button id="draw-btn" class="primary">번호 뽑기</button>
+    </div>
+
+    <div id="results"></div>
+    <button id="save-all-btn" class="secondary" hidden>전체 보관함에 저장</button>
+
+    <p class="notice">모든 조합의 당첨 확률은 같으며, 추천은 재미용 참고 자료입니다.</p>
+  </section>
+
+  <section id="tab-vault" class="tab">
+    <div id="vault-banner"></div>
+    <div id="vault-list"></div>
+  </section>
+
+  <section id="tab-stats" class="tab">
+    <div id="stats-body"></div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <h2>당첨번호 데이터</h2>
+      <p id="draw-status"></p>
+      <p>한 줄에 한 회차씩 "회차 번호6개 보너스번호" 순서로 붙여 넣으세요. 날짜가 있어도 되고, 구분은 공백·쉼표·탭 모두 됩니다.</p>
+      <pre class="probe">예) 1251 3 9 14 27 33 41 17</pre>
+      <textarea id="import-text" rows="6" placeholder="여기에 붙여넣기"></textarea>
+      <button id="import-btn" class="secondary">가져오기</button>
+      <pre id="import-out" class="probe"></pre>
+    </div>
+
+    <div class="card">
+      <h2>보관함 백업</h2>
+      <p>번호 보관함과 당첨번호 데이터를 파일로 저장하고, 다른 기기나 브라우저에서 불러올 수 있습니다.</p>
+      <button id="export-btn" class="secondary">백업 파일 내려받기</button>
+      <input id="restore-file" type="file" accept="application/json,.json" hidden>
+      <button id="restore-btn" class="secondary">백업 파일 불러오기</button>
+      <pre id="backup-out" class="probe"></pre>
+    </div>
+
+    <div class="card">
+      <h2>책임 있는 이용</h2>
+      <p>로또 6/45의 모든 번호 조합은 당첨 확률이 같습니다(1등 약 8,145,060분의 1). 이 앱의 추천은 당첨을 예측하거나 확률을 높이지 않으며, 번호를 고르는 재미를 위한 참고 자료입니다.</p>
+      <p>복권은 만 19세 이상만 구매할 수 있습니다. 이 앱은 복권을 판매하지 않으며 구매 사이트로 연결하지 않습니다.</p>
+      <p>도박 문제로 고민된다면 한국도박문제예방치유원 상담전화 <a href="tel:1336">1336</a>으로 연락해 보세요. (번호는 개발 시점 기준이며, 최신 안내를 확인하세요.)</p>
+    </div>
+
+    <div class="card">
+      <h2>최신 회차 조회 시험</h2>
+      <p>동행복권 데이터를 이 브라우저에서 직접 가져올 수 있는지 확인합니다. 대부분 막혀 있을 수 있으며, 그 경우 위의 가져오기를 쓰면 됩니다.</p>
+      <button id="probe-btn" class="secondary">조회 시험하기</button>
+      <pre id="probe-out" class="probe"></pre>
+    </div>
+
+    <div class="card">
+      <h2>데이터 삭제</h2>
+      <button id="reset-btn" class="danger">보관함 전체 삭제</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-tab="tab-recommend" class="active">추천</button>
+  <button data-tab="tab-vault">보관함</button>
+  <button data-tab="tab-stats">당첨 통계</button>
+  <button data-tab="tab-settings">설정</button>
+</nav>
+
+<dialog id="intro">
+  <h2>이용 안내</h2>
+  <p>이 앱의 번호 추천은 재미용 참고 자료입니다. 로또의 모든 조합은 당첨 확률이 같으며, 어떤 방식도 당첨을 보장하지 않습니다.</p>
+  <button id="intro-ok" class="primary">확인했습니다</button>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
